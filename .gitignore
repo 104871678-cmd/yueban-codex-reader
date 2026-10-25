@@ -1,0 +1,9 @@
+data/
+runtime/
+node_modules/
+.env
+.env.*
+*.log
+*.zip
+Thumbs.db
+.DS_Store

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>阅伴 · Codex Reader</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/vendor/pdfjs-dist/web/pdf_viewer.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <script src="/vendor/jszip.min.js" defer></script>
+  <script src="/vendor/marked.umd.js" defer></script>
+  <script src="/vendor/katex/katex.min.js" defer></script>
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-icon">阅</span><div><strong>阅伴</strong><span class="brand-en">CODEX READER</span></div><span id="readerVersion" class="beta">本地版</span></div>
+    <div class="file-title" id="fileTitle">把阅读中的疑问，留在阅读中解决</div>
+    <button id="toggleChat" type="button" class="chat-toggle" aria-controls="chatPanel" aria-expanded="true">收起问答 ›</button>
+    <details id="appMenu" class="app-menu">
+      <summary role="button" aria-label="打开操作菜单">☰ <span>菜单</span></summary>
+      <div class="app-menu-panel">
+        <div class="menu-heading">文档与对话</div>
+        <button id="openFile" type="button">＋ 打开文档</button>
+        <button id="quickRestart" type="button" title="重启问答服务，保留文档、页码和聊天记录；正在生成的回答会停止">↻ 快速重启</button>
+        <button id="newChat" type="button" disabled>＋ 新建对话</button>
+        <button id="exportChat" type="button">↓ 导出对话</button>
+        <button id="exportSolutions" type="button" hidden>↓ 导出解答</button>
+        <button id="toggleTheme" type="button" aria-pressed="false">☾ 深色背景</button>
+        <div class="menu-document-status"><span id="documentIndexStatus">打开文档后自动读取全文</span><span id="documentUploadStatus" role="status">全文文字将在后台准备</span></div>
+        <div class="menu-connection"><span>连接操作</span><button id="reconnect" class="text-button" type="button">重连</button><button id="login" class="text-button" type="button" hidden>登录</button></div>
+        <button id="help" type="button">? 使用说明</button>
+      </div>
+    </details>
+    <input id="fileInput" type="file" accept=".pdf,.ppt,.pptx" hidden>
+  </header>
+  <main class="workspace">
+    <section class="reader" aria-label="文档阅读器">
+      <div class="reader-toolbar">
+        <div class="toolbar-group"><button id="togglePages" class="icon-button" title="页码列表" aria-label="页码列表">☷</button><select id="readingMode" class="reader-mode" aria-label="阅读模式"><option value="continuous">连续阅读</option><option value="single">单页阅读</option></select><span id="documentType" class="toolbar-label">文档阅读区</span><button id="originalPreview" class="text-button original-preview" hidden disabled>原版准备中…</button></div>
+        <div class="toolbar-group pagination"><button id="prevPage" class="icon-button" aria-label="上一页" disabled>‹</button><input id="pageNumber" type="number" min="1" value="1" aria-label="当前页码" disabled><span id="pageTotal">/ —</span><button id="nextPage" class="icon-button" aria-label="下一页" disabled>›</button></div>
+        <div class="toolbar-group"><button id="zoomOut" class="icon-button" aria-label="缩小" disabled>−</button><button id="zoomFit" class="zoom-label" disabled>适合宽度</button><button id="zoomIn" class="icon-button" aria-label="放大" disabled>＋</button></div>
+      </div>
+      <div class="reader-content" id="dropZone">
+        <aside class="page-list" id="pageList" hidden aria-label="页面列表"></aside>
+        <div class="document-scroll" id="documentScroll">
+          <div class="empty-reader" id="emptyReader">
+            <div class="document-art"><span class="art-line"></span><span class="art-line"></span><span class="art-line short"></span><div class="art-badge">✦</div></div>
+            <span class="eyebrow">READ. ASK. UNDERSTAND.</span>
+            <h1>读到哪里，就问到哪里。</h1>
+            <p>打开一份文档，让 Codex 陪你理清每一个疑问。</p>
+            <button class="button primary large" id="emptyOpen">打开本地文档 <span>↗</span></button>
+            <div class="file-formats"><span>PDF</span><span>PPT</span><span>PPTX</span><small>也可以拖放文件到这里 · 最大 100 MB</small></div>
+            <p class="local-note">文件先在本机打开，全文在后台准备；提问复用全文并标注当前页，图片按需查看。</p>
+          </div>
+          <div id="pageStage" class="page-stage" hidden><div id="paper" class="paper"><canvas id="pdfCanvas"></canvas><div id="pdfText" class="textLayer"></div><article id="slideText" class="slide-text" hidden></article></div></div>
+        </div>
+      </div>
+      <footer class="reader-footer"><span id="readerStatus">为专注阅读，留一点提问的空间</span><span id="selectionIndicator"></span></footer>
+    </section>
+    <div class="resize-handle" id="resizeHandle" role="separator" aria-label="拖动调整聊天窗口宽度" aria-orientation="vertical" tabindex="0"></div>
+    <aside id="chatPanel" class="chat-panel" aria-label="Codex 对话窗口">
+      <div class="chat-heading"><div><span class="codex-symbol">✳</span><strong>Codex</strong><span id="connectionDot" class="status-dot"></span><span id="connectionText">正在连接本机 Codex…</span></div><button id="answerZoomReset" class="answer-zoom-reset" type="button" title="恢复回答文字为 100%" hidden>100%</button><button id="documentSummary" class="document-summary" type="button" title="点击查看文档准备详情">未打开文档</button></div>
+      <div id="taskProgress" hidden><progress id="taskProgressBar" value="0" max="1"></progress><span id="taskProgressText"></span></div>
+      <nav id="questionNav" class="question-nav" aria-label="问题定位" hidden><label for="questionJump">问题定位</label><select id="questionJump" aria-label="跳转到问题"><option value="">定位问题…</option></select><button id="latestMessage" type="button" class="text-button">回到最新 ↓</button></nav>
+      <div class="messages" id="messages" aria-live="polite" aria-relevant="additions text">
+        <div class="chat-welcome" id="chatWelcome"><div class="welcome-star">✳</div><h2>一起把这份文档读懂。</h2><p>从一个问题开始。解释段落、梳理逻辑，<br>或换一种方式理解复杂的内容。</p><div class="suggestions"><button data-question="请概括这一页的核心观点，并解释关键术语。"><span>≡</span> 概括这一页</button><button data-question="请用容易理解的语言，逐步解释这一页的内容，并举一个例子。"><span>◎</span> 换种方式解释</button><button data-question="请根据当前提供的内容，列出三个值得继续思考的问题。"><span>↗</span> 帮我深入思考</button></div></div>
+      </div>
+      <div id="selectionPreview" class="selection-preview" hidden><span>引用所选文字</span><button id="clearSelection" class="text-button" aria-label="取消引用">×</button><p></p></div>
+      <div class="composer-area">
+        <div id="replyPreview" class="reply-preview" hidden><button id="replyPreviewText" type="button" class="text-button"></button><button id="clearReply" type="button" class="text-button" aria-label="取消追问引用">×</button></div>
+        <form id="chatForm" class="composer"><div id="attachmentPreview" class="attachment-preview" hidden></div><textarea id="question" rows="2" maxlength="12000" placeholder="输入问题，也可粘贴图片…" aria-label="输入问题"></textarea><div class="composer-bottom"><button id="attachImage" type="button" class="attach-image" title="选择图片，也可在输入框粘贴截图">＋ 图片</button><details id="chatSettings" class="chat-settings"><summary role="button" aria-label="提问选项">选项 ⌄</summary><div class="settings-panel"><div class="menu-heading">提问选项</div><label for="scope">提问范围</label><select id="scope"><option value="page">当前页</option><option value="selection">选中文字</option><option value="document" selected>整份文档</option><option value="none">不附带内容</option></select><label class="image-toggle"><input id="includeImage" type="checkbox"> 总是附当前页图片</label><label for="model">模型</label><select id="model" aria-label="选择 Codex 模型"><option value="">使用 Codex 默认模型</option></select><label for="effort">回答速度</label><select id="effort" aria-label="回答速度" title="快速减少思考时间；深入适合复杂习题。对下一次提问生效，实际速度也受模型和网络影响。"><option value="low" selected>快速</option><option value="medium">均衡</option><option value="high">深入</option></select><small>Enter 发送 · Shift+Enter 换行</small></div></details><span id="contextInfo">先打开一份文档</span><button id="send" type="submit" class="send-button" disabled aria-label="发送问题">↑</button><button id="stop" type="button" class="stop-button" hidden>停止</button></div><input id="chatImageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden></form>
+        <div class="generation-status" id="generationStatus" role="status"></div>
+      </div>
+    </aside>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="helpDialog">
+    <div class="dialog-heading"><h2>开始使用阅伴</h2><button id="closeHelp" class="icon-button" aria-label="关闭说明">×</button></div>
+    <p>打开文件即可先阅读。本地全文准备与在线提交分开，提交卡顿不影响打开、翻页或缩放。提问只等待必要的本地准备，无需等待后台提交结束。</p>
+    <ol><li><b>整份文档：</b>后台提取全文并缓存；提问复用课程上下文，通常只需传递问题与页码。</li><li><b>当前页 / 选中文字：</b>在输入框的“选项”中调整讲解重点，仍保留全文上下文，可联系前后章节。</li><li><b>PPTX：</b>保留原比例与排版，第一页显示后，后台持续渲染其余页面并提取全文。</li></ol>
+    <p>扫描页在本机后台识别并缓存；默认不附图，图表等内容按需查看原图。“＋ 图片”可选择或粘贴补图，选项中也可开启“总是附当前页图片”。提问自动编号，可用“问题定位”“查看回答”与“回到主问题”跳转；点击“追问这段”引用原讲解。</p>
+    <p>阅读区顶部可切换“连续阅读 / 单页阅读”。连续模式中滚轮上下滑动；单页模式中，页面内的滚轮逐页翻阅，页面外的滚轮只上下滑动。切换模式保留当前页；第一页显示后，后台继续准备其他页。</p>
+    <p>Ctrl + 鼠标滚轮按鼠标位置独立缩放：左侧调整文档，右侧调整问答文字，不改变整个窗口。左侧“适合宽度”重置文档缩放，右侧出现的百分比按钮恢复文字到 100%。顶部可收起问答栏，草稿和记录会保留。</p>
+    <p>输入框的“选项”可调整提问范围、附图、模型和回答速度。设置对下一条回答生效。课程知识结构优先用层级提纲、对比表和公式直接呈现。</p>
+    <p>右上角“菜单”包含打开文档、快速重启、新建对话、导出和连接操作；点击页数状态可查看全文准备详情。快速重启保留文档、页码、草稿与记录，正在生成的回答会停止，未完成的问题需要重新发送。</p>
+    <p>阅读器使用临时 Codex 会话，普通提问、课程准备和自动任务均不写入 Codex 持久历史。问答与课程文字保存在阅读器本机目录；重新打开同一文件后恢复记录，重启后按需要恢复课程全文和最近对话上下文。</p>
+    <p>临时会话仍会联网发送问题和所需文档内容以获得回答。这项设置控制 Codex 历史列表，不代表离线处理或服务端零留存。升级时仅归档旧版阅读器在自己临时目录中创建的会话，保留本地问答。</p>
+    <p>打开文件后会自动在线提交全文文字，使用当前 Codex 账号权限与额度。不会先把全部图片逐批交给模型分析；需要图表时自动获取对应页。接收完成也不代表复杂题目已经算出答案；提问仍需模型思考。</p>
+    <button id="shutdown" class="button secondary">退出阅伴并关闭后台服务</button>
+  </dialog>
+</body>
+</html>
