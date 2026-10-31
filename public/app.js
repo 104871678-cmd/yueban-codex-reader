@@ -4,6 +4,7 @@ import { DocumentUpload } from './preload.js';
 import {referencedPages,messageId,normalizeConversation} from './conversation.js';
 import {ContinuousReader} from './continuous-reader.js';
 import {HtmlReader,readHtml} from './html-reader.js';
+import {ReaderMemoryClient} from './reader-memory.js';
 pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs-dist/build/pdf.worker.mjs';
 
 const $ = id => document.getElementById(id);
@@ -14,6 +15,14 @@ let documentUpload = null;
 let attachments=[],replyTarget=null,activeRootId=null;
 let navigationSerial=0,activeQuestionView=0,activeQuestionPage=null;
 let continuousReader=null;
+const readerMemory=new ReaderMemoryClient({api,onOpen:openFile,canOpen:()=>!state.busy&&!state.rendering&&!state.waitingToAsk,notify:toast,onPreferences:prefs=>{
+  if(prefs.theme)setDarkBackground(prefs.theme==='dark',false);
+  if(typeof prefs.chatCollapsed==='boolean')setChatCollapsed(prefs.chatCollapsed,false);
+  if(prefs.readingMode)$('readingMode').value=prefs.readingMode;
+  if(prefs.answerZoom)applyAnswerZoom(prefs.answerZoom);
+  if(prefs.chatWidth)document.documentElement.style.setProperty('--chat-width',Math.min(prefs.chatWidth,Math.max(330,innerWidth-340))+'px');
+  readerModeHint();
+}});
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 6500); }
 async function api(route, data) {
   const response = await fetch('/api/' + route, data === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
@@ -403,6 +412,7 @@ async function openFile(file) {
   if (!file || state.busy || state.rendering || state.waitingToAsk) return;
   if (!/\.(pdf|pptx?|html?)$/i.test(file.name)) return toast('请选择 PDF、PPT、PPTX 或 HTML 文件。');
   if (file.size > 100 * 1024 * 1024) return toast('文件超过 100 MB，请拆分后打开。');
+  readerMemory.flushPosition();
   const version = ++state.openVersion;
   attachments=[];showAttachments();clearReply();activeRootId=null;
   documentUpload?.cancel(); documentUpload = null;
@@ -447,7 +457,7 @@ async function openFile(file) {
     $('originalPreview').hidden = true;
     $('taskProgress').hidden = true;
     clearSelection(); $('scope').value = 'document'; showMessages();
-    $('fileTitle').textContent = file.name; $('fileTitle').title = file.name;
+    $('fileTitle').textContent = file.name; $('fileTitle').title = file.readerEntry?.path||file.name;
     $('documentType').textContent = html?'HTML · 连续网页':pdf ? (ext === 'pdf' ? 'PDF 文档' : 'PowerPoint · PDF 预览') : `PPTX · ${presentation.engine} 原版`;
     $('pageTotal').textContent = '/ ' + state.count; $('pageNumber').max = state.count;
     $('pageList').replaceChildren();
@@ -455,6 +465,7 @@ async function openFile(file) {
     if (state.count <= 500) for (let i = 1; i <= state.count; i++) { const b = document.createElement('button'); b.textContent = i; b.title = `第 ${i} 页`; b.onclick = () => navigate(i); $('pageList').append(b); }
     else { const label = document.createElement('span'); label.textContent = '请使用上方页码跳转'; label.style.fontSize = '11px'; $('pageList').append(label); }
     $('pageStage').hidden = false; await renderPage();
+    if(file.readerEntry){const savedPage=Math.min(state.count,Math.max(1,file.readerEntry.page||1));if(savedPage>1)await navigate(savedPage);void readerMemory.opened(file);}
     if(html?.missing)toast('该 HTML 引用了旁边的资源文件，部分图片或样式可能缺失；本版支持单文件 HTML。');
     // The first page is usable before hashing, history retrieval, or full-text indexing.
     if(presentation)state.slidesPromise=idleTurn().then(()=>readPptx(file)).then(value=>{if(version===state.openVersion)state.slides=value;return value;});
@@ -518,6 +529,7 @@ function syncReaderPage(number) {
   $('pageNumber').value=number;
   [...$('pageList').children].forEach((button,i)=>button.classList.toggle('active',i+1===number));
   $('readerStatus').textContent=state.file.name+' · 第 '+number+' / '+state.count+(state.html?' 段 · HTML 连续阅读':' 页 · '+($('readingMode').value==='single'?'单页阅读':'连续阅读'));
+  readerMemory.position(state.file,number);
 }
 async function renderPage() {
   if(!state.file)return;
@@ -845,7 +857,7 @@ async function runDocumentTask(kind, question, { textOnly = false } = {}) {
   finally { state.busy = false; state.controller = null; await persist(); updateControls(); documentUpload?.resume(); }
 }
 
-$('openFile').onclick = $('emptyOpen').onclick = () => $('fileInput').click();
+$('openFile').onclick = $('emptyOpen').onclick = () => {if(!state.pickingFile){state.pickingFile=true;$('openFile').disabled=true;void readerMemory.pick().finally(()=>{state.pickingFile=false;updateControls();});}};
 $('fileInput').onchange = e => openFile(e.target.files[0]);
 $('prevPage').onclick = () => navigate(state.page - 1); $('nextPage').onclick = () => navigate(state.page + 1);
 $('pageNumber').onchange = e => navigate(e.target.value);
@@ -873,6 +885,7 @@ function readerModeHint(){ $('documentScroll').title=$('readingMode').value==='s
 $('readingMode').onchange=async()=>{
   readerModeHint();singleWheelAmount=0;clearSelection();
   try{localStorage.setItem('codex-reader-reading-mode',$('readingMode').value);}catch{}
+  readerMemory.preference({readingMode:$('readingMode').value});
   if(continuousReader)await continuousReader.setMode($('readingMode').value,state.page);
 };
 let singleWheelAmount=0,readerZoomFrame=0,answerZoom=1;
@@ -886,6 +899,7 @@ function applyAnswerZoom(zoom,x,y){
   $('answerZoomReset').hidden=Math.abs(answerZoom-1)<.005;$('answerZoomReset').textContent=Math.round(answerZoom*100)+'%';
   $('answerZoomReset').title='回答文字 '+Math.round(answerZoom*100)+'%，点击恢复 100%';
   try{localStorage.setItem('codex-reader-answer-zoom',String(answerZoom));}catch{}
+  readerMemory.preference({answerZoom});
 }
 $('answerZoomReset').onclick=()=>applyAnswerZoom(1);
 document.addEventListener('wheel',event=>{
@@ -909,14 +923,16 @@ $('documentScroll').addEventListener('wheel',event=>{
   else{if(Math.sign(singleWheelAmount)!==direction)singleWheelAmount=0;singleWheelAmount+=event.deltaY;turns=Math.floor(Math.abs(singleWheelAmount)/100);singleWheelAmount-=direction*turns*100;}
   if(turns)void navigate(state.page+direction*turns);
 },{passive:false});
-$('toggleChat').onclick=()=>{
-  const collapsed=document.body.classList.toggle('chat-collapsed');
+function setChatCollapsed(collapsed,save=true){
+  document.body.classList.toggle('chat-collapsed',collapsed);
   $('toggleChat').textContent=collapsed?'‹ 展开问答':'收起问答 ›';
   $('toggleChat').setAttribute('aria-expanded',String(!collapsed));$('chatPanel').inert=collapsed;
   $('chatSettings').open=false;
   if(collapsed&&$('chatPanel').contains(document.activeElement))$('toggleChat').focus();
   if(state.file)void renderPage();
-};
+  if(save)readerMemory.preference({chatCollapsed:collapsed});
+}
+$('toggleChat').onclick=()=>setChatCollapsed(!document.body.classList.contains('chat-collapsed'));
 $('scope').onchange = updateControls; $('includeImage').onchange = updateControls;
 $('chatForm').onsubmit = e => { e.preventDefault(); void sendQuestion($('question').value); };
 $('attachImage').onclick=()=>$('chatImageInput').click();
@@ -989,24 +1005,27 @@ function scheduleRender() { clearTimeout(resizeTimer); resizeTimer = setTimeout(
 window.addEventListener('resize', scheduleRender);
 $('resizeHandle').addEventListener('pointerdown', e => { $('resizeHandle').setPointerCapture(e.pointerId); document.body.classList.add('resizing'); });
 $('resizeHandle').addEventListener('pointermove', e => { if (!document.body.classList.contains('resizing')) return; document.documentElement.style.setProperty('--chat-width', Math.max(330, Math.min(innerWidth - 340, innerWidth - e.clientX)) + 'px'); });
-$('resizeHandle').addEventListener('pointerup', () => { document.body.classList.remove('resizing'); scheduleRender(); });
+$('resizeHandle').addEventListener('pointerup', () => { document.body.classList.remove('resizing'); readerMemory.preference({chatWidth:$('chatPanel').clientWidth});scheduleRender(); });
 $('resizeHandle').addEventListener('keydown', e => { if (['ArrowLeft', 'ArrowRight'].includes(e.key)) { e.preventDefault(); const width = $('chatForm').closest('.chat-panel').clientWidth; document.documentElement.style.setProperty('--chat-width', Math.max(330, Math.min(innerWidth - 340, width + (e.key === 'ArrowLeft' ? 20 : -20))) + 'px'); scheduleRender(); } });
 
 async function init() {
   try {
     const token = location.hash.slice(1);
     if (token) { await api('unlock', { token }); history.replaceState(null, '', location.pathname); }
+    try{const saved=await readerMemory.load();if(saved.lastFileId)void readerMemory.open(saved.lastFileId);}catch{toast('暂时无法读取上次设置，仍可正常使用阅读器。');}
     await connect();
   } catch(e) { toast(e.message); $('connectionText').textContent = '请通过“启动阅伴”重新打开'; }
   updateControls();
 }
-function setDarkBackground(dark){
+function setDarkBackground(dark,save=true){
   document.documentElement.dataset.theme=dark?'dark':'light';
   $('toggleTheme').textContent=dark?'☀ 浅色背景':'☾ 深色背景';
   $('toggleTheme').setAttribute('aria-pressed',String(dark));
   try{localStorage.setItem('codex-reader-theme',dark?'dark':'light');}catch{}
+  if(save)readerMemory.preference({theme:dark?'dark':'light'});
 }
-try{setDarkBackground(localStorage.getItem('codex-reader-theme')==='dark');}catch{setDarkBackground(false);}
+try{setDarkBackground((document.documentElement.dataset.theme||localStorage.getItem('codex-reader-theme'))==='dark',false);}catch{setDarkBackground(false,false);}
+setChatCollapsed(document.body.classList.contains('chat-collapsed'),false);
 $('toggleTheme').onclick=()=>setDarkBackground(document.documentElement.dataset.theme!=='dark');
 try{$('readingMode').value=localStorage.getItem('codex-reader-reading-mode')==='single'?'single':'continuous';const saved=Number(localStorage.getItem('codex-reader-answer-zoom'));if(Number.isFinite(saved)&&saved>=.7&&saved<=2.5)applyAnswerZoom(saved);}catch{}
 readerModeHint();

@@ -1,9 +1,9 @@
 {
   "name": "codex-reader",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "type": "module",
-  "description": "A local PDF / PowerPoint reader with an embedded Codex conversation panel",
+  "description": "A local PDF / PowerPoint / HTML reader with an embedded Codex conversation panel",
   "scripts": { "start": "node server.mjs", "test": "node --test test/*.test.mjs" },
   "engines": { "node": ">=22" }
 }

@@ -11,6 +11,7 @@ import { validateMessage, buildPrompt, readerThreadOptions, PAGE_TOOL } from './
 import { LocalContext } from './lib/local-context.mjs';
 import { archiveReaderHistory } from './lib/history-cleanup.mjs';
 import { OcrHost } from './lib/ocr.mjs';
+import { ReaderMemory } from './lib/reader-memory.mjs';
 
 export const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.wasm': 'application/wasm', '.json': 'application/json', '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf', '.woff': 'font/woff', '.woff2': 'font/woff2' };
@@ -21,22 +22,23 @@ async function readBody(req, max) {
   for await (const chunk of req) { size += chunk.length; if (size > max) throw new Error('文件或消息过大。'); chunks.push(chunk); }
   return Buffer.concat(chunks);
 }
-function runPS(script, args = [], timeout = 90000) {
+function runPS(script, args = [], timeout = 90000, description = 'PPT 转换') {
   return new Promise((resolve, reject) => {
     const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = ''; const timer = setTimeout(() => { proc.kill(); reject(new Error('PPT 转换超时，请先手动另存为 PDF。')); }, timeout);
+    let out = '', err = ''; const timer = setTimeout(() => { proc.kill(); reject(new Error(description+'超时，请重试。')); }, timeout);
     proc.stdout.on('data', b => { out += b; }); proc.stderr.on('data', b => { err += b; });
     proc.on('error', e => { clearTimeout(timer); reject(e); });
     proc.on('exit', code => { clearTimeout(timer); code === 0 ? resolve(out) : reject(new Error(err.trim() || '未能转换 PPT。请安装 PowerPoint / LibreOffice，或另存为 PDF 后打开。')); });
   });
 }
 
-export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, port = 0, token = randomBytes(32).toString('hex'), presentationFactory = (input, directory) => new PresentationHost(path.join(ROOT,'render-slides.ps1'),input,directory),ocrFactory=script=>new OcrHost(script) } = {}) {
+export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, port = 0, token = randomBytes(32).toString('hex'), presentationFactory = (input, directory) => new PresentationHost(path.join(ROOT,'render-slides.ps1'),input,directory),ocrFactory=script=>new OcrHost(script),pickFile=async directory=>JSON.parse(await runPS(path.join(ROOT,'pick-file.ps1'),directory?['-InitialDirectory',directory]:[],600000,'文件选择')) } = {}) {
   const tmpDir = path.join(dataDir, 'tmp'), historyDir = path.join(dataDir, 'history');
   await mkdir(tmpDir, { recursive: true });
   await mkdir(historyDir, { recursive: true });
   bridge ||= new CodexBridge(tmpDir);
   const local=new LocalContext(dataDir);await local.load();
+  const memory=await new ReaderMemory(dataDir).load();let filePickerPromise=null;
   const sessions=local.sessions,prepared=local.prepared;
   const warmCourses=new Map(),ocrCaches=new Map(),htmlDocuments=new Map(),ocr=ocrFactory(path.join(ROOT,'ocr-pages.ps1'));
   async function closeHtmlDocuments(){await Promise.all([...htmlDocuments.values()].map(file=>unlink(file).catch(()=>{})));htmlDocuments.clear();}
@@ -131,7 +133,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
     try {
       if (req.headers.host !== new URL(origin).host) return json(res, 403, { error: '拒绝访问。' });
       const url = new URL(req.url, origin);
-      if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { app: 'codex-reader', version: '0.10.0', pid: process.pid });
+      if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { app: 'codex-reader', version: '0.11.0', pid: process.pid });
       if (url.pathname === '/api/unlock' && req.method === 'POST') {
         if (req.headers.origin !== origin) return json(res, 403, { error: '来源无效。' });
         const body = JSON.parse((await readBody(req, 1024)).toString());
@@ -142,6 +144,19 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
       const cookie = req.headers.cookie?.split(';').map(x => x.trim()).find(x => x.startsWith('reader='))?.slice(7);
       if (url.pathname.startsWith('/api/')) {
         if (!sameToken(cookie, token) || (req.method !== 'GET' && req.headers.origin !== origin)) return json(res, 403, { error: '请通过启动程序重新打开阅读器。' });
+        if(url.pathname==='/api/memory'&&req.method==='GET')return json(res,200,memory.snapshot());
+        if(url.pathname==='/api/preferences'&&req.method==='POST')return json(res,200,await memory.preferences(JSON.parse((await readBody(req,4096)).toString())));
+        if(url.pathname==='/api/files/pick'&&req.method==='POST'){
+          filePickerPromise||=(async()=>{const previous=memory.snapshot().files[0],selected=await pickFile(previous?path.dirname(previous.path):'');return selected?.path?{file:await memory.register(selected.path)}:{cancelled:true};})().finally(()=>{filePickerPromise=null;});
+          return json(res,200,await filePickerPromise);
+        }
+        if(url.pathname==='/api/files/content'&&req.method==='GET'){
+          const {file,info}=await memory.content(url.searchParams.get('id'));
+          res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Length':info.size,'X-File-Modified':String(info.mtimeMs)});createReadStream(file.path).on('error',()=>res.destroy()).pipe(res);return;
+        }
+        if(url.pathname==='/api/files/opened'&&req.method==='POST'){const body=JSON.parse((await readBody(req,4096)).toString());return json(res,200,await memory.opened(body.id));}
+        if(url.pathname==='/api/files/page'&&req.method==='POST'){const body=JSON.parse((await readBody(req,4096)).toString());await memory.page(body.id,body.page);return json(res,200,{ok:true});}
+        if(url.pathname==='/api/files/forget'&&req.method==='POST'){const body=JSON.parse((await readBody(req,4096)).toString());return json(res,200,await memory.forget(body.id));}
         if(url.pathname==='/api/html'&&req.method==='POST'){
           const html=await readBody(req,100*1024*1024),id=randomUUID(),file=path.join(tmpDir,id+'.html');
           await writeFile(file,html);htmlDocuments.set(id,file);
@@ -158,7 +173,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
         }
         if (url.pathname === '/api/status' && req.method === 'GET') {
           if(restartPromise)await restartPromise;
-          try { await startBridge();return json(res, 200, {...await bridge.status(),readerVersion:'0.10.0'}); } catch(e) { return json(res, 200, { readerVersion:'0.10.0',connected: false, loggedIn: false, error: e.message, models: [] }); }
+          try { await startBridge();return json(res, 200, {...await bridge.status(),readerVersion:'0.11.0'}); } catch(e) { return json(res, 200, { readerVersion:'0.11.0',connected: false, loggedIn: false, error: e.message, models: [] }); }
         }
         if(url.pathname==='/api/restart' && req.method==='POST') {
           if(!restartPromise) {
@@ -356,7 +371,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
           } catch(e) { await finish(threadId, 'failure', { message: e.message }); }
           return;
         }
-        if (url.pathname === '/api/shutdown' && req.method === 'POST') { json(res, 200, { ok: true }); setTimeout(async () => { for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await bridge.close();ocr.close(); await closePresentations();await closeHtmlDocuments(); server.closeAllConnections(); server.close(); }, 150); return; }
+        if (url.pathname === '/api/shutdown' && req.method === 'POST') { json(res, 200, { ok: true }); setTimeout(async () => { for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await bridge.close();ocr.close(); await closePresentations();await closeHtmlDocuments();await memory.queue.catch(()=>{}); server.closeAllConnections(); server.close(); }, 150); return; }
         return json(res, 404, { error: '找不到接口。' });
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: '不支持此操作。' });
@@ -366,6 +381,12 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
       if (!target.startsWith(publicDir + path.sep)) return json(res, 403, { error: '拒绝访问。' });
       const info = await stat(target).catch(() => null);
       if (!info?.isFile()) return json(res, 404, { error: '文件不存在。' });
+      if(target===path.join(publicDir,'index.html')){
+        const prefs=memory.snapshot().preferences;let html=await readFile(target,'utf8');
+        if(prefs.theme)html=html.replace('<html lang="zh-CN">',`<html lang="zh-CN" data-theme="${prefs.theme}">`);
+        if(prefs.chatCollapsed)html=html.replace('<body>','<body class="chat-collapsed">');
+        const content=Buffer.from(html);res.writeHead(200,{'Content-Type':TYPES['.html'],'Content-Length':content.length});return res.end(req.method==='HEAD'?undefined:content);
+      }
       res.writeHead(200, { 'Content-Type': TYPES[path.extname(target)] || 'application/octet-stream', 'Content-Length': info.size });
       if (req.method === 'HEAD') return res.end();
       createReadStream(target).pipe(res);
@@ -374,7 +395,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   origin = `http://127.0.0.1:${server.address().port}`;
-  return { server, bridge, origin, token, async close() { await bridge.close();ocr.close(); for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await closePresentations();await closeHtmlDocuments(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
+  return { server, bridge, origin, token, async close() { await bridge.close();ocr.close(); for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await closePresentations();await closeHtmlDocuments();await memory.queue.catch(()=>{}); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

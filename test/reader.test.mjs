@@ -57,6 +57,25 @@ test('prompt carries exact page, scope, and quotation boundaries', () => {
   assert.match(text, /当前页码：2/); assert.match(text, /范围：当前页/); assert.match(text, /<document_content>\n文档正文\n<\/document_content>/);
 });
 
+test('reader settings, real file paths and reading position survive a new server origin without Codex',async t=>{
+  const dataDir=await mkdtemp(path.join(os.tmpdir(),'reader-memory-')),fixture=path.join(dataDir,'课程.pdf');await writeFile(fixture,'local document');let app,cookie;
+  t.after(async()=>{await app?.close();await rm(dataDir,{recursive:true,force:true});});
+  async function start(){const bridge=new TestBridge();app=await createReader({dataDir,bridge,pickFile:async()=>({path:fixture})});const response=await fetch(app.origin+'/api/unlock',{method:'POST',headers:{Origin:app.origin},body:JSON.stringify({token:app.token})});cookie=response.headers.get('set-cookie').split(';')[0];return bridge;}
+  const send=(route,body)=>fetch(app.origin+'/api/'+route,{method:'POST',headers:{Cookie:cookie,Origin:app.origin},body:JSON.stringify(body)});
+  const read=route=>fetch(app.origin+'/api/'+route,{headers:{Cookie:cookie}});
+  let bridge=await start();assert.equal((await send('preferences',{theme:'dark',chatCollapsed:true,readingMode:'single',answerZoom:1.2})).status,200);
+  const picked=await(await send('files/pick',{})).json();assert.equal(path.basename(picked.file.path),'课程.pdf');
+  assert.equal(await(await read('files/content?id='+picked.file.id)).text(),'local document');
+  assert.equal((await fetch(app.origin+'/api/files/content?id='+picked.file.id)).status,403);
+  await send('files/opened',{id:picked.file.id});await send('files/page',{id:picked.file.id,page:7});assert.equal(bridge.calls.length,0);
+  await app.close();bridge=await start();
+  const saved=await(await read('memory')).json();assert.equal(saved.preferences.theme,'dark');assert.equal(saved.preferences.chatCollapsed,true);assert.equal(saved.lastFileId,picked.file.id);assert.equal(saved.files[0].page,7);assert.equal(saved.files[0].path,picked.file.path);assert.equal(bridge.calls.length,0);
+  const html=await(await fetch(app.origin)).text();assert.match(html,/data-theme="dark"/);assert.match(html,/<body class="chat-collapsed">/);
+  assert.equal((await send('preferences',{theme:'invalid'})).status,400);
+  await rm(fixture);const missing=await read('files/content?id='+picked.file.id);assert.equal(missing.status,400);assert.match((await missing.json()).error,/移动或删除/);
+  await send('files/forget',{id:picked.file.id});assert.equal((await(await read('memory')).json()).files.length,0);
+});
+
 test('HTML keeps scripts in a private isolated document and removes its file on close',async t=>{
   const {send,url,cookie,app,dataDir}=await setup(t);
   const html='<!doctype html><html><body><h1>课程</h1><script>document.body.dataset.ready="yes"</script></body></html>';
