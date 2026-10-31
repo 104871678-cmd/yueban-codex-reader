@@ -32,7 +32,7 @@
         <button id="help" type="button">? 使用说明</button>
       </div>
     </details>
-    <input id="fileInput" type="file" accept=".pdf,.ppt,.pptx" hidden>
+    <input id="fileInput" type="file" accept=".pdf,.ppt,.pptx,.html,.htm" hidden>
   </header>
   <main class="workspace">
     <section class="reader" aria-label="文档阅读器">
@@ -50,7 +50,7 @@
             <h1>读到哪里，就问到哪里。</h1>
             <p>打开一份文档，让 Codex 陪你理清每一个疑问。</p>
             <button class="button primary large" id="emptyOpen">打开本地文档 <span>↗</span></button>
-            <div class="file-formats"><span>PDF</span><span>PPT</span><span>PPTX</span><small>也可以拖放文件到这里 · 最大 100 MB</small></div>
+            <div class="file-formats"><span>PDF</span><span>PPT</span><span>PPTX</span><span>HTML</span><small>也可以拖放文件到这里 · 最大 100 MB</small></div>
             <p class="local-note">文件先在本机打开，全文在后台准备；提问复用全文并标注当前页，图片按需查看。</p>
           </div>
           <div id="pageStage" class="page-stage" hidden><div id="paper" class="paper"><canvas id="pdfCanvas"></canvas><div id="pdfText" class="textLayer"></div><article id="slideText" class="slide-text" hidden></article></div></div>
@@ -80,6 +80,7 @@
     <p>打开文件即可先阅读。本地全文准备与在线提交分开，提交卡顿不影响打开、翻页或缩放。提问只等待必要的本地准备，无需等待后台提交结束。</p>
     <ol><li><b>整份文档：</b>后台提取全文并缓存；提问复用课程上下文，通常只需传递问题与页码。</li><li><b>当前页 / 选中文字：</b>在输入框的“选项”中调整讲解重点，仍保留全文上下文，可联系前后章节。</li><li><b>PPTX：</b>保留原比例与排版，第一页显示后，后台持续渲染其余页面并提取全文。</li></ol>
     <p>扫描页在本机后台识别并缓存；默认不附图，图表等内容按需查看原图。“＋ 图片”可选择或粘贴补图，选项中也可开启“总是附当前页图片”。提问自动编号，可用“问题定位”“查看回答”与“回到主问题”跳转；点击“追问这段”引用原讲解。</p>
+    <p>HTML / HTM 支持单文件课程，保留网页排版和常见脚本交互，使用连续阅读；上方编号表示正文段号，可用于定位。支持全文问答、选中文字和独立缩放。依赖旁边资源文件夹的页面可能缺图或缺样式；网页图表需手动补截图。HTML 内嵌笔记暂不跨次保存，阅读器聊天仍正常保存。</p>
     <p>阅读区顶部可切换“连续阅读 / 单页阅读”。连续模式中滚轮上下滑动；单页模式中，页面内的滚轮逐页翻阅，页面外的滚轮只上下滑动。切换模式保留当前页；第一页显示后，后台继续准备其他页。</p>
     <p>Ctrl + 鼠标滚轮按鼠标位置独立缩放：左侧调整文档，右侧调整问答文字，不改变整个窗口。左侧“适合宽度”重置文档缩放，右侧出现的百分比按钮恢复文字到 100%。顶部可收起问答栏，草稿和记录会保留。</p>
     <p>输入框的“选项”可调整提问范围、附图、模型和回答速度。设置对下一条回答生效。课程知识结构优先用层级提纲、对比表和公式直接呈现。</p>

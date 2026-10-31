@@ -38,7 +38,8 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
   bridge ||= new CodexBridge(tmpDir);
   const local=new LocalContext(dataDir);await local.load();
   const sessions=local.sessions,prepared=local.prepared;
-  const warmCourses=new Map(),ocrCaches=new Map(),ocr=ocrFactory(path.join(ROOT,'ocr-pages.ps1'));
+  const warmCourses=new Map(),ocrCaches=new Map(),htmlDocuments=new Map(),ocr=ocrFactory(path.join(ROOT,'ocr-pages.ps1'));
+  async function closeHtmlDocuments(){await Promise.all([...htmlDocuments.values()].map(file=>unlink(file).catch(()=>{})));htmlDocuments.clear();}
   async function ocrCache(key){if(!ocrCaches.has(key))ocrCaches.set(key,readFile(path.join(dataDir,'ocr',key+'.json'),'utf8').then(JSON.parse).catch(()=>({})));return ocrCaches.get(key);}
   function uploadStatus(key){const source=prepared[key],warm=warmCourses.get(key),valid=warm&&warm.revision===source?.revision;return {ready:!!(local.ready(source)&&valid&&warm.pages.size===source.total&&!active.has(warm.threadId)),cached:local.ready(source),textPages:valid?[...warm.pages].sort((a,b)=>a-b):[],imagePages:[],total:source?.total||0};}
   let cleanupNeeded=false,cleanupPromise=null,historyCleanup=null;
@@ -130,7 +131,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
     try {
       if (req.headers.host !== new URL(origin).host) return json(res, 403, { error: '拒绝访问。' });
       const url = new URL(req.url, origin);
-      if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { app: 'codex-reader', version: '0.9.0', pid: process.pid });
+      if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { app: 'codex-reader', version: '0.10.0', pid: process.pid });
       if (url.pathname === '/api/unlock' && req.method === 'POST') {
         if (req.headers.origin !== origin) return json(res, 403, { error: '来源无效。' });
         const body = JSON.parse((await readBody(req, 1024)).toString());
@@ -141,9 +142,23 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
       const cookie = req.headers.cookie?.split(';').map(x => x.trim()).find(x => x.startsWith('reader='))?.slice(7);
       if (url.pathname.startsWith('/api/')) {
         if (!sameToken(cookie, token) || (req.method !== 'GET' && req.headers.origin !== origin)) return json(res, 403, { error: '请通过启动程序重新打开阅读器。' });
+        if(url.pathname==='/api/html'&&req.method==='POST'){
+          const html=await readBody(req,100*1024*1024),id=randomUUID(),file=path.join(tmpDir,id+'.html');
+          await writeFile(file,html);htmlDocuments.set(id,file);
+          return json(res,200,{id,url:'/api/html/'+id});
+        }
+        if(url.pathname.startsWith('/api/html/')){
+          const id=url.pathname.slice('/api/html/'.length),file=htmlDocuments.get(id);
+          if(!file)return json(res,404,{error:'HTML 文档已关闭。'});
+          if(req.method==='DELETE'){htmlDocuments.delete(id);await unlink(file).catch(()=>{});return json(res,200,{ok:true});}
+          if(req.method==='GET'){
+            res.setHeader('Content-Security-Policy',"sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src data: blob: https:; font-src data: https:; connect-src https:; media-src data: blob: https:; object-src 'none'; frame-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'");
+            res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});createReadStream(file).pipe(res);return;
+          }
+        }
         if (url.pathname === '/api/status' && req.method === 'GET') {
           if(restartPromise)await restartPromise;
-          try { await startBridge();return json(res, 200, {...await bridge.status(),readerVersion:'0.9.0'}); } catch(e) { return json(res, 200, { readerVersion:'0.9.0',connected: false, loggedIn: false, error: e.message, models: [] }); }
+          try { await startBridge();return json(res, 200, {...await bridge.status(),readerVersion:'0.10.0'}); } catch(e) { return json(res, 200, { readerVersion:'0.10.0',connected: false, loggedIn: false, error: e.message, models: [] }); }
         }
         if(url.pathname==='/api/restart' && req.method==='POST') {
           if(!restartPromise) {
@@ -341,7 +356,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
           } catch(e) { await finish(threadId, 'failure', { message: e.message }); }
           return;
         }
-        if (url.pathname === '/api/shutdown' && req.method === 'POST') { json(res, 200, { ok: true }); setTimeout(async () => { for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await bridge.close();ocr.close(); await closePresentations(); server.closeAllConnections(); server.close(); }, 150); return; }
+        if (url.pathname === '/api/shutdown' && req.method === 'POST') { json(res, 200, { ok: true }); setTimeout(async () => { for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await bridge.close();ocr.close(); await closePresentations();await closeHtmlDocuments(); server.closeAllConnections(); server.close(); }, 150); return; }
         return json(res, 404, { error: '找不到接口。' });
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: '不支持此操作。' });
@@ -359,7 +374,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   origin = `http://127.0.0.1:${server.address().port}`;
-  return { server, bridge, origin, token, async close() { await bridge.close();ocr.close(); for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await closePresentations(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
+  return { server, bridge, origin, token, async close() { await bridge.close();ocr.close(); for (const id of active.keys()) await finish(id, 'done', { status: 'interrupted' }); await closePresentations();await closeHtmlDocuments(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

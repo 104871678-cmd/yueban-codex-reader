@@ -9,7 +9,7 @@ if (Test-Path -LiteralPath $runtimePath) {
         $candidate = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json
         if ($candidate.url -match '^http://127\.0\.0\.1:\d+$') {
             $health = Invoke-RestMethod -Uri ($candidate.url + '/health') -TimeoutSec 2
-            if ($health.app -eq 'codex-reader' -and $health.version -eq '0.9.0' -and $health.pid -eq $candidate.pid) { $runtime = $candidate }
+            if ($health.app -eq 'codex-reader' -and $health.version -eq '0.10.0' -and $health.pid -eq $candidate.pid) { $runtime = $candidate }
             elseif ($health.app -eq 'codex-reader' -and $health.pid -eq $candidate.pid -and $candidate.token -match '^[a-f0-9]{64}$') {
                 # Gracefully release the previous reader's conversation writers before upgrading.
                 Invoke-RestMethod -Uri ($candidate.url + '/api/shutdown') -Method Post -Headers @{ Cookie = ('reader=' + $candidate.token); Origin = $candidate.url } -ContentType 'application/json' -Body '{}' -TimeoutSec 5 | Out-Null
@@ -42,7 +42,7 @@ if (-not $runtime) {
                 $candidate = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json
                 if ($candidate.url -notmatch '^http://127\.0\.0\.1:\d+$') { continue }
                 $health = Invoke-RestMethod -Uri ($candidate.url + '/health') -TimeoutSec 1
-                if ($health.app -eq 'codex-reader' -and $health.version -eq '0.9.0' -and $health.pid -eq $candidate.pid) { $runtime = $candidate; break }
+                if ($health.app -eq 'codex-reader' -and $health.version -eq '0.10.0' -and $health.pid -eq $candidate.pid) { $runtime = $candidate; break }
             } catch { }
         }
     }

@@ -56,6 +56,20 @@ test('prompt carries exact page, scope, and quotation boundaries', () => {
   const text = buildPrompt(validateMessage(message()));
   assert.match(text, /当前页码：2/); assert.match(text, /范围：当前页/); assert.match(text, /<document_content>\n文档正文\n<\/document_content>/);
 });
+
+test('HTML keeps scripts in a private isolated document and removes its file on close',async t=>{
+  const {send,url,cookie,app,dataDir}=await setup(t);
+  const html='<!doctype html><html><body><h1>课程</h1><script>document.body.dataset.ready="yes"</script></body></html>';
+  const created=await send('/api/html',null,{headers:{Cookie:cookie,Origin:app.origin,'Content-Type':'text/html'},body:html});
+  assert.equal(created.status,200);const document=await created.json();
+  assert.equal((await fetch(url(document.url))).status,403);
+  const response=await fetch(url(document.url),{headers:{Cookie:cookie}});
+  assert.equal(await response.text(),html);assert.match(response.headers.get('content-security-policy'),/sandbox allow-scripts;/);
+  assert.doesNotMatch(response.headers.get('content-security-policy'),/allow-same-origin/);
+  assert.equal((await fetch(url(document.url),{method:'DELETE',headers:{Cookie:cookie,Origin:app.origin}})).status,200);
+  assert.equal((await fetch(url(document.url),{headers:{Cookie:cookie}})).status,404);
+  assert.deepEqual((await readdir(path.join(dataDir,'tmp'))).filter(name=>name.endsWith('.html')),[]);
+});
 test('requires local cookie and origin; blocks access to private app files', async t => {
   const { url, cookie, app } = await setup(t);
   assert.equal((await fetch(url('/api/status'))).status, 403);

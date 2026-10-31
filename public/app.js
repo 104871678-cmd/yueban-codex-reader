@@ -3,6 +3,7 @@ import { planBatches, exercisePrompt, reviewPrompt, questionScope, asksAllExerci
 import { DocumentUpload } from './preload.js';
 import {referencedPages,messageId,normalizeConversation} from './conversation.js';
 import {ContinuousReader} from './continuous-reader.js';
+import {HtmlReader,readHtml} from './html-reader.js';
 pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs-dist/build/pdf.worker.mjs';
 
 const $ = id => document.getElementById(id);
@@ -35,12 +36,16 @@ function updateControls() {
   $('prevPage').disabled = !state.count || state.page <= 1 || state.rendering;
   $('nextPage').disabled = !state.count || state.page >= state.count || state.rendering;
   $('pageNumber').disabled = !state.count || state.rendering;
-  for (const id of ['zoomIn', 'zoomOut', 'zoomFit']) $(id).disabled = !(state.pdf || state.presentation) || state.rendering;
+  for (const id of ['zoomIn', 'zoomOut', 'zoomFit']) $(id).disabled = !(state.pdf || state.presentation || state.html) || state.rendering;
+  $('readingMode').hidden=!!state.html;
   $('scope').querySelector('option[value="selection"]').disabled = !!state.presentation;
   const attachAllowed = !!(state.pdf || state.presentation || state.analysisPdf || state.analysisPending) && ['page', 'document'].includes($('scope').value);
   $('includeImage').disabled = !attachAllowed || state.busy || state.waitingToAsk;
   const scope = $('scope').value;
+  $('scope').querySelector('option[value="page"]').textContent=state.html?'当前正文段':'当前页';
   $('contextInfo').textContent = !state.file ? '先打开一份文档' : scope === 'none' ? '仅发送问题，保留前文对话' : scope === 'document' ? `全文文字 · 共 ${state.count} 页` : scope === 'selection' ? `引用 ${state.selected.length} 字` : `第 ${state.page} 页${attachAllowed && $('includeImage').checked ? ' · 全文 + 附图' : ' · 全文上下文'}`;
+  if(state.html&&scope==='document')$('contextInfo').textContent=`全文文字 · ${state.count} 段`;
+  if(state.html&&scope==='page')$('contextInfo').textContent=`第 ${state.page} 段 · 全文上下文`;
   if(state.restarting)for(const id of ['send','stop','openFile','fileInput','emptyOpen','newChat','attachImage','scope','model','effort','reconnect'])$(id).disabled=true;
   updateCompactStatus();fitQuestionInput();
 }
@@ -396,7 +401,7 @@ async function ensureAnalysisImages() {
 
 async function openFile(file) {
   if (!file || state.busy || state.rendering || state.waitingToAsk) return;
-  if (!/\.(pdf|pptx?)$/i.test(file.name)) return toast('请选择 PDF、PPT 或 PPTX 文件。');
+  if (!/\.(pdf|pptx?|html?)$/i.test(file.name)) return toast('请选择 PDF、PPT、PPTX 或 HTML 文件。');
   if (file.size > 100 * 1024 * 1024) return toast('文件超过 100 MB，请拆分后打开。');
   const version = ++state.openVersion;
   attachments=[];showAttachments();clearReply();activeRootId=null;
@@ -408,10 +413,11 @@ async function openFile(file) {
   $('readerStatus').textContent = '正在打开文档…'; $('emptyReader').hidden = true; $('pageStage').hidden = true;
   state.rendering = true; updateControls();
   try {
-    let pdf = null, slides = null, presentation = null;
+    let pdf = null, slides = null, presentation = null, html = null;
     const ext = file.name.split('.').at(-1).toLowerCase();
     let data;
-    if (ext === 'pdf') data = new Uint8Array(await file.arrayBuffer());
+    if (ext === 'html'||ext === 'htm') html=await readHtml(file);
+    else if (ext === 'pdf') data = new Uint8Array(await file.arrayBuffer());
     else if (ext === 'pptx') {
       $('readerStatus').textContent = '正在用本机 WPS / PowerPoint 打开原版第一页…';
       try{presentation=await openPresentation(file);}
@@ -437,18 +443,19 @@ async function openFile(file) {
     state.renderTask?.cancel(); state.textLayer?.cancel();
     for (const old of new Set([state.pdf, state.analysisPdf])) await old?.destroy();
     if (state.presentation) void api('presentation/close',{id:state.presentation.id}).catch(()=>{});
-    Object.assign(state, { file, key: null, pdf, slides, presentation,slidesPromise:null, analysisPdf: null, analysisPending: false, analysisPromise: null, page: 1, count: pdf ? pdf.numPages : presentation.count, zoom: null, textCache: new Map(), pages: null, task: null, messages: [], metadataPromise: null, indexPromise: null });
+    Object.assign(state, { file, key: null, pdf, slides, presentation,html,slidesPromise:null, analysisPdf: null, analysisPending: false, analysisPromise: null, page: 1, count: html?1:pdf ? pdf.numPages : presentation.count, zoom: null, textCache: new Map(), pages: null, task: null, messages: [], metadataPromise: null, indexPromise: null });
     $('originalPreview').hidden = true;
     $('taskProgress').hidden = true;
     clearSelection(); $('scope').value = 'document'; showMessages();
     $('fileTitle').textContent = file.name; $('fileTitle').title = file.name;
-    $('documentType').textContent = pdf ? (ext === 'pdf' ? 'PDF 文档' : 'PowerPoint · PDF 预览') : `PPTX · ${presentation.engine} 原版`;
+    $('documentType').textContent = html?'HTML · 连续网页':pdf ? (ext === 'pdf' ? 'PDF 文档' : 'PowerPoint · PDF 预览') : `PPTX · ${presentation.engine} 原版`;
     $('pageTotal').textContent = '/ ' + state.count; $('pageNumber').max = state.count;
     $('pageList').replaceChildren();
     // Avoid thousands of buttons for exceptionally large files; page-number input remains available.
     if (state.count <= 500) for (let i = 1; i <= state.count; i++) { const b = document.createElement('button'); b.textContent = i; b.title = `第 ${i} 页`; b.onclick = () => navigate(i); $('pageList').append(b); }
     else { const label = document.createElement('span'); label.textContent = '请使用上方页码跳转'; label.style.fontSize = '11px'; $('pageList').append(label); }
     $('pageStage').hidden = false; await renderPage();
+    if(html?.missing)toast('该 HTML 引用了旁边的资源文件，部分图片或样式可能缺失；本版支持单文件 HTML。');
     // The first page is usable before hashing, history retrieval, or full-text indexing.
     if(presentation)state.slidesPromise=idleTurn().then(()=>readPptx(file)).then(value=>{if(version===state.openVersion)state.slides=value;return value;});
     const controller = state.prepareController = new AbortController();
@@ -464,6 +471,7 @@ async function openFile(file) {
 }
 
 async function pageText(index) {
+  if(state.html)return state.html.pages?.[index-1]||'';
   if (state.textCache.has(index)) return state.textCache.get(index);
   let text; const version = state.openVersion, pdf = state.pdf;
   if (pdf) { const page = await pdf.getPage(index); const content = await page.getTextContent(); text = content.items.map(item => item.str + (item.hasEOL ? '\n' : ' ')).join('').trim(); }
@@ -471,6 +479,7 @@ async function pageText(index) {
   if (version === state.openVersion) state.textCache.set(index, text); return text;
 }
 async function indexWholeDocument() {
+  if(state.html){const pages=state.pages=state.html.pages;pages.forEach((text,i)=>state.textCache.set(i+1,text));$('documentIndexStatus').textContent=`全文已读取 · ${pages.length} 段（HTML 按正文分段定位）`;updateControls();return pages;}
   const version = state.openVersion, pages = [];
   try {
     for (let index = 1; index <= state.count; index++) {
@@ -508,13 +517,23 @@ function syncReaderPage(number) {
   if(state.page!==number){state.page=number;navigationSerial++;clearSelection();}
   $('pageNumber').value=number;
   [...$('pageList').children].forEach((button,i)=>button.classList.toggle('active',i+1===number));
-  $('readerStatus').textContent=state.file.name+' · 第 '+number+' / '+state.count+' 页 · '+($('readingMode').value==='single'?'单页阅读':'连续阅读');
+  $('readerStatus').textContent=state.file.name+' · 第 '+number+' / '+state.count+(state.html?' 段 · HTML 连续阅读':' 页 · '+($('readingMode').value==='single'?'单页阅读':'连续阅读'));
 }
 async function renderPage() {
   if(!state.file)return;
-  const source=state.pdf||state.presentation;
+  const source=state.html||state.pdf||state.presentation;
   if(continuousReader?.source===source){continuousReader.zoom=state.zoom;continuousReader.layout();$('zoomFit').textContent=state.zoom?Math.round(state.zoom*100)+'%':'适合宽度';return;}
   continuousReader?.close();state.rendering=true;updateControls();
+  if(state.html){
+    const view=continuousReader=new HtmlReader({stage:$('pageStage'),scroll:$('documentScroll'),onPage:syncReaderPage,
+      onSelection:(text,page)=>{if(Number.isInteger(page)&&page>=1&&page<=state.count)syncReaderPage(page);state.selected=text;$('scope').value='selection';$('selectionPreview').hidden=false;$('selectionPreview').querySelector('p').textContent=text;$('selectionIndicator').textContent=`已选中 ${text.length} 字`;updateControls();},
+      onZoom:({delta,mode,x,y})=>{const pixels=delta*(mode===1?16:mode===2?500:1);state.zoom=Math.max(.25,Math.min(4,(state.zoom||1)*Math.exp(-Math.max(-250,Math.min(250,pixels))*.0012)));const rect=view.frame.getBoundingClientRect();view.zoomAt(state.zoom,rect.left+x,rect.top+y);$('zoomFit').textContent=Math.round(state.zoom*100)+'%';},
+      onLink:url=>window.open(url,'_blank','noopener,noreferrer')});
+    try{await view.open(source);if(continuousReader!==view)return;state.count=source.pages.length;$('pageTotal').textContent='/ '+state.count+' 段';$('pageNumber').max=state.count;$('pageNumber').setAttribute('aria-label','当前正文段');$('pageList').replaceChildren();
+      for(let i=1;i<=Math.min(500,state.count);i++){const button=document.createElement('button');button.textContent=i;button.title=source.labels?.[i-1]||`第 ${i} 段`;button.onclick=()=>navigate(i);$('pageList').append(button);}syncReaderPage(1);$('zoomFit').textContent='适合宽度';
+    }finally{if(continuousReader===view){state.rendering=false;updateControls();}}return;
+  }
+  $('pageNumber').setAttribute('aria-label','当前页码');
   const view=continuousReader=new ContinuousReader({stage:$('pageStage'),scroll:$('documentScroll'),pdfjs,onPage:syncReaderPage,onError:error=>toast('页面显示失败：'+error.message)});
   view.source=source;
   try{await view.open({pdf:state.pdf,presentation:state.presentation,count:state.count,getImage:page=>originalPageImage(page),zoom:state.zoom,mode:$('readingMode').value});
@@ -561,6 +580,7 @@ async function addImages(files) {
   }
 }
 async function renderPageImage(index, source = state.pdf || state.analysisPdf) {
+  if(state.html)throw new Error('HTML 已提供全文文字；网页图表请通过“＋ 图片”补充截图。');
   if (state.presentation && !source) {
     const image = await originalPageImage(index);
     const scale = Math.min(1,1400/image.naturalWidth,2000/image.naturalHeight);
@@ -767,7 +787,7 @@ async function runDocumentTask(kind, question, { textOnly = false } = {}) {
     if (attachImages) await ensureAnalysisImages();
     const pages = await waitForPreparation(state.indexPromise);
     if (!pages?.length) throw new Error('文档尚未读取完成。');
-    if(!textOnly && !attachImages && pages.every(p=>p.trim().length<24)){attachImages=true;await ensureAnalysisImages();}
+    if(!state.html && !textOnly && !attachImages && pages.every(p=>p.trim().length<24)){attachImages=true;await ensureAnalysisImages();}
     if (!state.task || state.task.kind !== kind || state.task.question !== question || state.task.next >= state.task.batches.length) {
       const batches = planBatches(pages, { maxPages: attachImages ? 3 : (kind === 'exercises' ? 6 : 24), maxChars: kind === 'exercises' ? 24000 : 65000, overlap: kind === 'exercises' });
       state.task = { kind, question, batches, next: 0, results: [], attachImages, model: $('model').value, effort: $('effort').value };
