@@ -133,7 +133,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
     try {
       if (req.headers.host !== new URL(origin).host) return json(res, 403, { error: '拒绝访问。' });
       const url = new URL(req.url, origin);
-      if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { app: 'codex-reader', version: '0.11.0', pid: process.pid });
+      if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { app: 'codex-reader', version: '0.11.1', pid: process.pid });
       if (url.pathname === '/api/unlock' && req.method === 'POST') {
         if (req.headers.origin !== origin) return json(res, 403, { error: '来源无效。' });
         const body = JSON.parse((await readBody(req, 1024)).toString());
@@ -173,7 +173,7 @@ export async function createReader({ dataDir = path.join(ROOT, 'data'), bridge, 
         }
         if (url.pathname === '/api/status' && req.method === 'GET') {
           if(restartPromise)await restartPromise;
-          try { await startBridge();return json(res, 200, {...await bridge.status(),readerVersion:'0.11.0'}); } catch(e) { return json(res, 200, { readerVersion:'0.11.0',connected: false, loggedIn: false, error: e.message, models: [] }); }
+          try { await startBridge();return json(res, 200, {...await bridge.status(),readerVersion:'0.11.1'}); } catch(e) { return json(res, 200, { readerVersion:'0.11.1',connected: false, loggedIn: false, error: e.message, models: [] }); }
         }
         if(url.pathname==='/api/restart' && req.method==='POST') {
           if(!restartPromise) {
